@@ -317,7 +317,7 @@ window.addEventListener('unhandledrejection', (e)=> showDebug((e.reason && e.rea
 
   // ---- zoom behaviour ----
   const zoom = d3.zoom()
-    .scaleExtent([1,26])
+    .scaleExtent([1,70])
     .extent([[0,0],[W,H]])
     .translateExtent([[0,0],[W,H]])
     .on('zoom', zoomed)
