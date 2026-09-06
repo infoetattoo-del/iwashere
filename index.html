@@ -499,7 +499,7 @@ window.addEventListener('unhandledrejection', (e)=> showDebug((e.reason && e.rea
       suggestionsEl.style.display = 'none';
       suggestionsEl.innerHTML = '';
 
-      flyTo(p[0], p[1], 5, ()=>{
+      flyTo(p[0], p[1], 22, ()=>{
         try{ openPopup(city); }catch(err){ showDebug(err); }
       });
     }catch(err){ showDebug(err); }
