@@ -91,12 +91,16 @@ svg#map:active{cursor:grabbing;}
   transform-origin:center;animation:pulse-ring 2.6s ease-out infinite;}
 .city-dot-outer{fill:var(--accent);opacity:0.16;}
 .city-dot-inner{fill:var(--accent);}
-.city-label{fill:var(--text-bright);font-family:'Space Grotesk',sans-serif;font-size:11px;font-weight:500;
+.city-label{fill:var(--text-bright);font-family:'Space Grotesk',sans-serif;font-size:9.5px;font-weight:500;
   pointer-events:none;user-select:none;}
 .draft .city-dot-pulse{display:none;}
 .draft .city-dot-outer{display:none;}
 .draft .city-dot-inner{fill:transparent;stroke:var(--accent);stroke-width:1.4;stroke-dasharray:2,2;}
 .draft .city-label{fill:var(--text-mid);font-style:italic;}
+.sync-error .city-dot-pulse{stroke:#ff6b6b;}
+.sync-error .city-dot-outer{fill:#ff6b6b;opacity:0.18;}
+.sync-error .city-dot-inner{fill:#ff6b6b;}
+.sync-error .city-label{fill:#ff9c9c;}
 
 @keyframes pulse-ring{0%{transform:scale(0.5);opacity:0.75;}100%{transform:scale(2.4);opacity:0;}}
 @keyframes label-in{from{opacity:0;transform:translateY(3px);}to{opacity:1;transform:translateY(0);}}
@@ -134,7 +138,7 @@ svg#map:active{cursor:grabbing;}
 
   <div class="footer-bar">
     <div class="counter" id="counter"><b>0</b> cities visited</div>
-    <div class="attribution">Fond de carte © Natural Earth<br>Base de villes © Natural Earth</div>
+    <div class="attribution">Fond de carte © Natural Earth<br>Recherche © contributeurs OpenStreetMap</div>
   </div>
 </div>
 
@@ -164,6 +168,7 @@ window.addEventListener('unhandledrejection', (e)=> showDebug((e.reason && e.rea
   const W = 980, H = 560;
   const MIN_LABEL_K = 1.9;
   const LABEL_AREA_FACTOR = 2400;
+  const CITY_LABEL_MIN_K = 2.3; // les noms de villes n'apparaissent qu'à partir de ce zoom (le point reste toujours visible)
 
   const svg = d3.select('#map').attr('viewBox', `0 0 ${W} ${H}`).attr('preserveAspectRatio','xMidYMid meet');
   const statusMsg = document.getElementById('statusMsg');
@@ -247,19 +252,23 @@ window.addEventListener('unhandledrejection', (e)=> showDebug((e.reason && e.rea
     const pos = cityScreenPos(d.x, d.y);
     popupEl.style.left = pos.x + 'px';
     popupEl.style.top = pos.y + 'px';
+    const canValidate = d.status === 'draft' || d.status === 'saving';
+    const isError = d.status === 'sync-error';
     popupEl.innerHTML = `
       <div class="p-name">${escapeHtml(d.name)}</div>
       <div class="p-meta">${escapeHtml(d.meta || '')}</div>
+      ${isError ? '<div class="p-meta" style="color:#ff9c9c">Sauvegarde échouée — vérifie ta connexion</div>' : ''}
       <div class="p-actions">
-        ${d.status==='draft' ? '<button class="validate" data-act="validate">Valider</button>' : ''}
-        <button class="delete" data-act="delete">${d.status==='draft' ? 'Annuler' : 'Supprimer'}</button>
+        ${canValidate ? '<button class="validate" data-act="validate">Valider</button>' : ''}
+        ${isError ? '<button class="validate" data-act="retry">Réessayer</button>' : ''}
+        <button class="delete" data-act="delete">${canValidate ? 'Annuler' : 'Supprimer'}</button>
       </div>`;
     popupEl.style.display = 'block';
     popupEl.querySelectorAll('button').forEach(btn=>{
       btn.addEventListener('click', (ev)=>{
         ev.stopPropagation();
         try{
-          if(btn.dataset.act === 'validate') validateCity(d.id);
+          if(btn.dataset.act === 'validate' || btn.dataset.act === 'retry') validateCity(d.id);
           if(btn.dataset.act === 'delete') deleteCity(d.id);
         }catch(err){ showDebug(err); }
       });
@@ -270,15 +279,21 @@ window.addEventListener('unhandledrejection', (e)=> showDebug((e.reason && e.rea
   async function validateCity(id){
     const c = cities.find(c=>c.id===id);
     if(!c) return;
-    c.status = 'confirmed';
+    c.status = 'saving';
     renderCities(id);
     updateCounter();
     closePopup();
     try{
       const { error } = await sb.from('visited_places')
-        .insert([{ id:c.id, name:c.name, meta:c.meta, lat:c.lat, lon:c.lon }]);
+        .insert([{ id:c.id, name:c.name, meta:c.meta, country:c.country, lat:c.lat, lon:c.lon }]);
       if(error) throw error;
-    }catch(e){ showDebug('Erreur de sauvegarde Supabase : ' + e.message); }
+      c.status = 'confirmed';
+    }catch(e){
+      c.status = 'sync-error';
+      showDebug('Erreur de sauvegarde Supabase : ' + e.message);
+    }
+    renderCities(id);
+    updateCounter();
   }
   async function deleteCity(id){
     const c = cities.find(c=>c.id===id);
@@ -315,6 +330,7 @@ window.addEventListener('unhandledrejection', (e)=> showDebug((e.reason && e.rea
     const k = t.k;
     g.selectAll('.inner-scale').attr('transform', `scale(${1/k})`);
     countryLabelAnchors.style('display', d => (k >= MIN_LABEL_K && d.area * k * k > LABEL_AREA_FACTOR) ? null : 'none');
+    gCities.selectAll('.city-label').style('display', k >= CITY_LABEL_MIN_K ? null : 'none');
   }
   svg.call(zoom.transform, d3.zoomIdentity);
 
@@ -337,7 +353,7 @@ window.addEventListener('unhandledrejection', (e)=> showDebug((e.reason && e.rea
     try{
       const { data, error } = await sb.from('visited_places').select('*').order('created_at');
       if(error) throw error;
-      cities = (data||[]).map(r=>({ id:r.id, name:r.name, meta:r.meta, lat:r.lat, lon:r.lon, status:'confirmed' }));
+      cities = (data||[]).map(r=>({ id:r.id, name:r.name, meta:r.meta, country:r.country, lat:r.lat, lon:r.lon, status:'confirmed' }));
     }catch(e){ showDebug('Chargement Supabase impossible : ' + e.message); }
     cities.forEach(c=>{
       const p = projection([c.lon, c.lat]);
@@ -348,8 +364,18 @@ window.addEventListener('unhandledrejection', (e)=> showDebug((e.reason && e.rea
   }
 
   function updateCounter(){
-    const n = cities.filter(c=>c.status==='confirmed').length;
-    counterEl.innerHTML = `<b>${n}</b> ${n===1?'city':'cities'} visited`;
+    const confirmed = cities.filter(c=>c.status==='confirmed');
+    const n = confirmed.length;
+    const countrySet = new Set(confirmed.map(c=> c.country || c.meta || 'inconnu'));
+    const m = countrySet.size;
+    counterEl.innerHTML = `<b>${n}</b> ${n===1?'city':'cities'} visited · <b>${m}</b> ${m===1?'country':'countries'}`;
+  }
+
+  function markerClass(d){
+    let c = 'place-marker';
+    if(d.status==='draft' || d.status==='saving') c += ' draft';
+    if(d.status==='sync-error') c += ' sync-error';
+    return c;
   }
 
   function renderCities(justAddedId){
@@ -357,7 +383,7 @@ window.addEventListener('unhandledrejection', (e)=> showDebug((e.reason && e.rea
       .data(cities, d=>d.id)
       .join(
         enter => {
-          const gEnter = enter.append('g').attr('class', d=>`place-marker ${d.status==='draft'?'draft':''}`)
+          const gEnter = enter.append('g').attr('class', markerClass)
             .attr('transform', d=>`translate(${d.x},${d.y})`)
             .on('click', (event,d)=>{ event.stopPropagation(); try{ openPopup(d); }catch(err){ showDebug(err); } });
           const inner = gEnter.append('g').attr('class','inner-scale');
@@ -369,7 +395,7 @@ window.addEventListener('unhandledrejection', (e)=> showDebug((e.reason && e.rea
           return gEnter;
         },
         update => {
-          update.attr('class', d=>`place-marker ${d.status==='draft'?'draft':''}`);
+          update.attr('class', markerClass);
           update.select('.city-label').attr('class', d=> 'city-label' + (d.id===justAddedId ? ' is-new' : ''));
           return update;
         },
@@ -377,19 +403,21 @@ window.addEventListener('unhandledrejection', (e)=> showDebug((e.reason && e.rea
       );
     const t = d3.zoomTransform(svg.node());
     sel.select('.inner-scale').attr('transform', `scale(${1/t.k})`);
+    sel.select('.city-label').style('display', t.k >= CITY_LABEL_MIN_K ? null : 'none');
     return sel;
   }
 
-  // ---- recherche locale (aucun réseau requis) ----
+  // ---- recherche : OpenStreetMap (Nominatim) en priorité, base locale en secours ----
   const searchInput = document.getElementById('searchInput');
   const suggestionsEl = document.getElementById('suggestions');
   let searchTimer = null;
+  let searchSeq = 0; // pour ignorer les réponses obsolètes si l'utilisateur retape vite
 
   function normalize(s){
     return (s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
   }
 
-  function searchCities(q){
+  function searchCitiesLocal(q){
     const nq = normalize(q);
     const starts = [], contains = [];
     for(const c of CITY_DB){
@@ -397,25 +425,50 @@ window.addEventListener('unhandledrejection', (e)=> showDebug((e.reason && e.rea
       if(n.startsWith(nq)) starts.push(c);
       else if(n.includes(nq)) contains.push(c);
     }
-    // classement par importance (population) pour que les villes connues sortent en premier
     starts.sort((a,b)=> (b[4]||0) - (a[4]||0));
     contains.sort((a,b)=> (b[4]||0) - (a[4]||0));
-    return starts.concat(contains).slice(0,8);
+    // format uniforme [name, lat, lon, meta, country]
+    return starts.concat(contains).slice(0,8).map(c=>[c[0], c[1], c[2], c[3], c[3]]);
+  }
+
+  async function searchCitiesRemote(q){
+    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=8&accept-language=fr&q=${encodeURIComponent(q)}`;
+    const res = await fetch(url);
+    if(!res.ok) throw new Error('recherche indisponible');
+    const results = await res.json();
+    return results.map(r=>{
+      const name = r.name || r.display_name.split(',')[0];
+      const meta = r.display_name.split(',').slice(1,3).join(',').trim();
+      const country = (r.address && r.address.country) || r.display_name.split(',').slice(-1)[0].trim();
+      return [name, parseFloat(r.lat), parseFloat(r.lon), meta, country];
+    });
   }
 
   searchInput.addEventListener('input', ()=>{
     const q = searchInput.value.trim();
     clearTimeout(searchTimer);
     if(q.length < 2){ suggestionsEl.style.display = 'none'; return; }
-    searchTimer = setTimeout(()=> renderSuggestions(q), 120);
+    searchTimer = setTimeout(()=> runSearch(q), 350);
   });
 
   document.addEventListener('click', (e)=>{
     if(!e.target.closest('.search-wrap')) suggestionsEl.style.display = 'none';
   });
 
-  function renderSuggestions(q){
-    const results = searchCities(q);
+  async function runSearch(q){
+    const mySeq = ++searchSeq;
+    // affichage instantané des résultats locaux pendant que la recherche en ligne se fait
+    renderSuggestions(searchCitiesLocal(q));
+    try{
+      const remote = await searchCitiesRemote(q);
+      if(mySeq !== searchSeq) return; // une recherche plus récente a été lancée entretemps
+      if(remote.length) renderSuggestions(remote);
+    }catch(e){
+      // pas de connexion / service indisponible : on garde les résultats locaux déjà affichés
+    }
+  }
+
+  function renderSuggestions(results){
     suggestionsEl.style.display = 'block';
     if(!results.length){
       suggestionsEl.innerHTML = '<div class="suggestion empty">Aucun résultat</div>';
@@ -423,22 +476,22 @@ window.addEventListener('unhandledrejection', (e)=> showDebug((e.reason && e.rea
     }
     suggestionsEl.innerHTML = '';
     results.forEach(r=>{
-      const [name, lat, lon, country] = r;
+      const [name, lat, lon, meta, country] = r;
       const div = document.createElement('div');
       div.className = 'suggestion';
-      div.innerHTML = `<span class="s-name">${escapeHtml(name)}</span><span class="s-meta">${escapeHtml(country)}</span>`;
-      div.addEventListener('click', (ev)=>{ pickResult(name, lat, lon, country); });
+      div.innerHTML = `<span class="s-name">${escapeHtml(name)}</span><span class="s-meta">${escapeHtml(meta)}</span>`;
+      div.addEventListener('click', (ev)=>{ pickResult(name, lat, lon, meta, country); });
       suggestionsEl.appendChild(div);
     });
   }
 
-  function pickResult(name, lat, lon, country){
+  function pickResult(name, lat, lon, meta, country){
     try{
       const p = projection([lon, lat]);
       if(!p || isNaN(p[0]) || isNaN(p[1])) { showDebug('Coordonnées invalides pour ' + name); return; }
 
       const id = 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
-      const city = { id, name, meta:country, lat, lon, x:p[0], y:p[1], status:'draft' };
+      const city = { id, name, meta, country, lat, lon, x:p[0], y:p[1], status:'draft' };
       cities.push(city);
       renderCities();
 
